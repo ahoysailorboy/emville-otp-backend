@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const nodemailer = require('nodemailer');
 const bodyParser = require('body-parser');
@@ -14,7 +15,7 @@ app.use(bodyParser.json());
 // In-memory OTP store (not suitable for production)
 const otpStore = {};
 
-// ➤ Signup route must come AFTER bodyParser
+// Signup route
 const signupRoutes = require('./routes/signup');
 app.use('/api', signupRoutes);
 
@@ -30,13 +31,13 @@ app.post('/send-otp', async (req, res) => {
     const transporter = nodemailer.createTransport({
       service: 'gmail',
       auth: {
-        user: 'shallow.waters22@gmail.com',       // ✅ your Gmail
-        pass: 'akceflfqqkjgmbjn',                  // ✅ Gmail App Password
+        user: process.env.EMAIL_USER,  // ✅ from .env
+        pass: process.env.EMAIL_PASS,  // ✅ from .env
       },
     });
 
     const mailOptions = {
-      from: 'shallow.waters22@gmail.com',
+      from: process.env.EMAIL_USER,
       to: email,
       subject: 'Your OTP Code',
       text: `Your OTP is ${otp}. It is valid for 5 minutes.`,
@@ -67,4 +68,3 @@ app.post('/verify-otp', (req, res) => {
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
-
