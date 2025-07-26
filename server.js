@@ -1,66 +1,63 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const nodemailer = require('nodemailer');
+const bodyParser = require('body-parser');
 const cors = require('cors');
+const crypto = require('crypto');
 
 const app = express();
+const PORT = process.env.PORT || 5000;
+
 app.use(cors());
 app.use(bodyParser.json());
 
-let transporter;
-
-// Initialize Ethereal test account and transporter once at startup
-nodemailer.createTestAccount().then(testAccount => {
-  transporter = nodemailer.createTransport({
-    host: testAccount.smtp.host,
-    port: testAccount.smtp.port,
-    secure: testAccount.smtp.secure, // true for 465, false for other ports
-    auth: {
-      user: testAccount.user,
-      pass: testAccount.pass,
-    },
-  });
-
-  console.log('Ethereal test account created');
-  console.log('User:', testAccount.user);
-  console.log('Pass:', testAccount.pass);
-}).catch(console.error);
-
-function generateOTP() {
-  return Math.floor(100000 + Math.random() * 900000).toString();
-}
+// In-memory OTP store (not suitable for production)
+const otpStore = {};
 
 app.post('/send-otp', async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).send('Email is required');
+
+  const otp = crypto.randomInt(100000, 999999).toString();
+  otpStore[email] = otp;
+
   try {
-    const { email } = req.body;
-    if (!email) {
-      return res.status(400).json({ error: 'Email is required' });
-    }
+    // Create Gmail transporter
+    const transporter = nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: 'shallow.waters22@gmail.com',            // 👈 Replace with your Gmail
+        pass: 'akceflfqqkjgmbjn'          // 👈 Replace with Gmail App Password
+      }
+    });
 
-    const otp = generateOTP();
-
-    let info = await transporter.sendMail({
-      from: '"Emville PMS" <no-reply@emville.com>',
+    const mailOptions = {
+      from: 'shallow.waters22@gmail.com',
       to: email,
-      subject: 'Your OTP for Emville PMS',
-      text: `Your OTP code is: ${otp}`,
-    });
+      subject: 'Your OTP Code',
+      text: `Your OTP is ${otp}. It is valid for 5 minutes.`
+    };
 
-    console.log('OTP sent: %s', otp);
-    console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
-
-    res.json({
-      message: 'OTP sent',
-      otp, // for testing, normally do NOT send OTP back in response
-      previewUrl: nodemailer.getTestMessageUrl(info),
-    });
+    await transporter.sendMail(mailOptions);
+    console.log(`OTP sent to ${email}: ${otp}`);
+    res.status(200).send('OTP sent successfully');
   } catch (error) {
-    console.error('Failed to send OTP', error);
-    res.status(500).json({ error: 'Failed to send OTP' });
+    console.error('Error sending OTP:', error);
+    res.status(500).send('Failed to send OTP');
   }
 });
 
-const PORT = process.env.PORT || 3000;
+app.post('/verify-otp', (req, res) => {
+  const { email, otp } = req.body;
+  if (!email || !otp) return res.status(400).send('Missing email or OTP');
+
+  if (otpStore[email] === otp) {
+    delete otpStore[email]; // Remove used OTP
+    return res.status(200).send('OTP verified successfully');
+  } else {
+    return res.status(400).send('Invalid OTP');
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`OTP backend running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
