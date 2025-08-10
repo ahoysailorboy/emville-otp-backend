@@ -7,7 +7,7 @@ const crypto = require('crypto');
 const nodemailer = require('nodemailer');
 
 // Initialize Firebase Admin (via ./firebase using CommonJS)
-const admin = require('./firebase'); // eslint-disable-line no-unused-vars
+const admin = require('./admin/firebase'); // eslint-disable-line no-unused-vars
 
 const app = express();
 const PORT = process.env.PORT || 5000;

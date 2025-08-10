@@ -2,16 +2,24 @@
 const admin = require('firebase-admin');
 
 if (!admin.apps.length) {
-  const json = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!json) throw new Error('FIREBASE_SERVICE_ACCOUNT is missing');
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!serviceAccountJson) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT env var is missing.');
+  }
 
-  const serviceAccount = JSON.parse(json);
+  let serviceAccount;
+  try {
+    serviceAccount = JSON.parse(serviceAccountJson);
+  } catch (err) {
+    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT:', err);
+    throw err;
+  }
 
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
   });
 
-  console.log('✅ Firebase Admin initialized (CJS)');
+  console.log('✅ Firebase Admin initialized');
 }
 
 module.exports = admin;
