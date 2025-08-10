@@ -32,6 +32,11 @@ const transporter = nodemailer.createTransport({
 const signupRoutes = require('./routes/signup');
 app.use('/api', signupRoutes);
 
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+  res.status(200).send('OK');
+});
 // In-memory OTP store: Map<email, { code, expires }>
 const otpStore = new Map();
 
