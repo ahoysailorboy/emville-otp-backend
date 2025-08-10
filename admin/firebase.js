@@ -1,61 +1,27 @@
 // admin/firebase.js
 const admin = require('firebase-admin');
 
-function initFromIndividualVars() {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
-  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+if (!admin.apps.length) {
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT;
+  if (!raw) {
+    throw new Error('FIREBASE_SERVICE_ACCOUNT env var is missing.');
+  }
 
-  if (!projectId || !clientEmail || !privateKey) return false;
-
-  // Convert \n to real newlines for PEM parsing
-  privateKey = privateKey.replace(/\\n/g, '\n');
-
-  admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId,
-      clientEmail,
-      privateKey,
-    }),
-  });
-
-  return true;
-}
-
-function initFromServiceAccountJson() {
-  const sa = process.env.FIREBASE_SERVICE_ACCOUNT;
-  if (!sa) return false;
-
-  let parsed;
+  let serviceAccount;
   try {
-    parsed = JSON.parse(sa);
+    serviceAccount = JSON.parse(raw);
+    // In case the private key has \n escapes, normalize them to real newlines
+    if (typeof serviceAccount.private_key === 'string') {
+      serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
   } catch (err) {
-    console.error('❌ Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', err);
+    console.error('Failed to parse FIREBASE_SERVICE_ACCOUNT JSON:', err);
     throw err;
   }
 
-  // If the private_key came with actual newlines, keep; if escaped, unescape.
-  if (typeof parsed.private_key === 'string') {
-    parsed.private_key = parsed.private_key.replace(/\\n/g, '\n');
-  }
-
   admin.initializeApp({
-    credential: admin.credential.cert(parsed),
+    credential: admin.credential.cert(serviceAccount),
   });
-
-  return true;
-}
-
-if (!admin.apps.length) {
-  const ok =
-    initFromIndividualVars() ||
-    initFromServiceAccountJson();
-
-  if (!ok) {
-    throw new Error(
-      'Firebase Admin init failed: Provide either (FIREBASE_PROJECT_ID, FIREBASE_CLIENT_EMAIL, FIREBASE_PRIVATE_KEY) or FIREBASE_SERVICE_ACCOUNT.'
-    );
-  }
 
   console.log('✅ Firebase Admin initialized');
 }
