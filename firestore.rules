@@ -1,0 +1,79 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- Helpers ----------
+    function isSignedIn() { return request.auth != null; }
+    // Uses the custom claim set by /api/admin/set-role
+    function isAdmin() { return isSignedIn() && request.auth.token.admin == true; }
+    function isSelf(uid) { return isSignedIn() && request.auth.uid == uid; }
+
+    // ---------- users/{uid} ----------
+    // Client cannot create user docs; backend creates & updates privileged fields.
+    match /users/{uid} {
+      // Read: self or admins
+      allow read: if isSelf(uid) || isAdmin();
+
+      // Create: block clients (Admin SDK bypasses rules)
+      allow create: if false;
+
+      // Self can update ONLY safe profile fields
+      allow update: if isSelf(uid) &&
+        request.resource.data.diff(resource.data).changedKeys()
+          .hasOnly(['displayName', 'photoURL', 'phone', 'updatedAt']);
+
+      // Admins can update/delete anything in users
+      allow update, delete: if isAdmin();
+    }
+
+    // ---------- tasks/{taskId} ----------
+    // Everyone signed-in can view tasks.
+    match /tasks/{taskId} {
+      allow read: if isSignedIn();
+
+      // Create & delete tasks: ADMIN only
+      allow create, delete: if isAdmin();
+
+      // Update:
+      // - Normal users may only touch completion/postpone fields
+      // - Admins may update anything
+      allow update: if isAdmin()
+        || (
+          isSignedIn() &&
+          request.resource.data.diff(resource.data).changedKeys().hasOnly([
+            'lastDoneDate',      // timestamp (done date)
+            'nextDueDate',       // timestamp (computed)
+            'remarks',           // string
+            'isPostponed',       // bool
+            'postponedAt',       // timestamp (server)
+            'postponedRemarks',  // string
+            'updatedBy'          // string (user name/email)
+          ])
+        );
+
+      // ----- Subcollection: tasks/{taskId}/history/{historyId} -----
+      match /history/{historyId} {
+        // Signed-in users can view history (for reports)
+        allow read: if isSignedIn();
+
+        // Any signed-in user may append a history row
+        allow create: if isSignedIn();
+
+        // Only admins can update or delete history entries
+        allow update, delete: if isAdmin();
+      }
+    }
+
+    // ---------- adminLogs/{id} (optional audit trail) ----------
+    match /adminLogs/{id} {
+      allow read, create: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // ---------- Default deny ----------
+    // Everything not explicitly matched above is blocked.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

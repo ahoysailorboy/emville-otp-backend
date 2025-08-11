@@ -16,7 +16,18 @@
     "cors": "^2.8.5",
     "dotenv": "^17.2.1",
     "express": "^5.1.0",
-    "firebase-admin": "^13.4.0",
     "nodemailer": "^7.0.5"
-  }
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.0",
+    "firebase-admin": "^13.4.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ahoysailorboy/emville-otp-backend.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ahoysailorboy/emville-otp-backend/issues"
+  },
+  "homepage": "https://github.com/ahoysailorboy/emville-otp-backend#readme"
 }
