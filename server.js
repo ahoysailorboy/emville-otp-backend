@@ -52,31 +52,34 @@ const otpStore = new Map();
 
 // Helpers
 const normalizeEmail = (e) => String(e || '').trim().toLowerCase();
-
-/**
- * POST /send-otp
- * Body: { email: string }
- */
 app.post('/send-otp', async (req, res) => {
   try {
-    const email = normalizeEmail((req.body || {}).email);
-    if (!email) {
+    const requestedEmail = normalizeEmail((req.body || {}).email);
+    if (!requestedEmail) {
       return res.status(400).json({ success: false, message: 'Email is required.' });
     }
 
+    // Generate + store OTP against the *requesting* email
     const code = crypto.randomInt(100000, 999999).toString();
     const expires = Date.now() + 5 * 60 * 1000; // 5 minutes
-    otpStore.set(email, { code, expires });
+    otpStore.set(requestedEmail, { code, expires });
 
+    // Where to send? → Admin inbox (not the user)
+    const adminTo = process.env.ADMIN_NOTIFY_EMAIL || 'ahoy_sailorboy@yahoo.com';
+
+    // Optional: include the requested email in the message so admin knows who asked
+    const text = `OTP for signup request from ${requestedEmail}: ${code}\nValid for 5 minutes.`;
+
+    // Send
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
-      to: email,
-      subject: 'Your OTP Code',
-      text: `Your OTP is ${code}. It is valid for 5 minutes.`,
+      to: adminTo,
+      subject: 'Emville PMS — Signup OTP',
+      text,
     });
 
-    console.log(`OTP sent to ${email}: ${code}`);
-    return res.status(200).json({ success: true, message: 'OTP sent successfully.' });
+    console.log(`[send-otp] sent to admin ${adminTo} for ${requestedEmail} (code ${code})`);
+    return res.status(200).json({ success: true, message: 'OTP sent to administrator.' });
   } catch (err) {
     console.error('Error sending OTP:', err);
     return res.status(500).json({ success: false, message: 'Failed to send OTP.' });
