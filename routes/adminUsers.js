@@ -5,7 +5,7 @@ const admin = require('../admin/firebase');
 
 const PROTECTED_EMAIL = 'ahoy_sailorboy@yahoo.com';
 
-// -------- Admin API key guard (enabled only if ADMIN_API_KEY is set) --------
+// -------- Admin API key guard (only enforced if ADMIN_API_KEY is set) --------
 function adminGuard(req, res, next) {
   const requiredKey = process.env.ADMIN_API_KEY;
   if (!requiredKey) return next(); // guard disabled if no key configured
@@ -36,7 +36,9 @@ async function resolveAuthUser({ uid, email }) {
  * Body: { uid?: string, email?: string, role: "admin" | "user" }
  * - Sets custom claim { admin: true|false }
  * - Revokes refresh tokens
- * - Mirrors { role, isAdmin } to Firestore users/{uid} with set(..., {merge:true})
+ * - Mirrors { role, isAdmin, uid, email } into Firestore:
+ *    a) Upsert canonical users/{uid}
+ *    b) Update any legacy docs where uid=={uid} OR email=={email}
  * - Protected admin cannot be demoted
  */
 router.post('/set-role', adminGuard, async (req, res) => {
@@ -68,15 +70,38 @@ router.post('/set-role', adminGuard, async (req, res) => {
     // 2) Force token refresh on next use
     await admin.auth().revokeRefreshTokens(targetUid);
 
-    // 3) Mirror to Firestore (create if missing)
-    await admin.firestore().collection('users').doc(targetUid).set(
-      {
-        role: roleStr,
-        isAdmin: roleStr === 'admin',
-        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-      },
-      { merge: true }
-    );
+    // 3) Mirror to Firestore (canonical + legacy docs)
+    const db = admin.firestore();
+    const usersCol = db.collection('users');
+    const payload = {
+      uid: targetUid,
+      email: targetEmail,
+      role: roleStr,
+      isAdmin: roleStr === 'admin',
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    };
+
+    // 3a) Canonical upsert at users/{uid}
+    await usersCol.doc(targetUid).set(payload, { merge: true });
+
+    // 3b) Update any legacy docs created with auto IDs (uid/email fields present)
+    const [byUidSnap, byEmailSnap] = await Promise.all([
+      usersCol.where('uid', '==', targetUid).get(),
+      usersCol.where('email', '==', targetEmail).get(),
+    ]);
+
+    // Use a batched write to minimize round trips
+    const batch = db.batch();
+    const touched = new Set([targetUid]); // avoid double-writing canonical doc
+    for (const doc of [...byUidSnap.docs, ...byEmailSnap.docs]) {
+      if (!touched.has(doc.id)) {
+        batch.set(doc.ref, payload, { merge: true });
+        touched.add(doc.id);
+      }
+    }
+    if (!byUidSnap.empty || !byEmailSnap.empty) {
+      await batch.commit();
+    }
 
     return res.json({ ok: true, uid: targetUid, role: roleStr });
   } catch (e) {
@@ -89,7 +114,8 @@ router.post('/set-role', adminGuard, async (req, res) => {
  * POST /api/admin/delete-user
  * Body: { uid?: string, email?: string }
  * - Deletes from Firebase Auth
- * - Best-effort deletes Firestore users/{uid}
+ * - Deletes canonical users/{uid}
+ * - Best-effort deletes any legacy docs where uid/email match
  * - Protected admin cannot be deleted
  */
 router.post('/delete-user', adminGuard, async (req, res) => {
@@ -114,8 +140,29 @@ router.post('/delete-user', adminGuard, async (req, res) => {
       if (e?.errorInfo?.code !== 'auth/user-not-found') throw e;
     });
 
-    // Best-effort Firestore cleanup
-    await admin.firestore().collection('users').doc(targetUid).delete().catch(() => {});
+    // Firestore cleanup: canonical + legacy docs
+    const db = admin.firestore();
+    const usersCol = db.collection('users');
+
+    // canonical
+    await usersCol.doc(targetUid).delete().catch(() => {});
+
+    // legacy docs
+    const [byUidSnap, byEmailSnap] = await Promise.all([
+      usersCol.where('uid', '==', targetUid).get(),
+      usersCol.where('email', '==', targetEmail).get(),
+    ]);
+    const batch = db.batch();
+    const seen = new Set();
+    for (const doc of [...byUidSnap.docs, ...byEmailSnap.docs]) {
+      if (!seen.has(doc.id)) {
+        batch.delete(doc.ref);
+        seen.add(doc.id);
+      }
+    }
+    if (seen.size > 0) {
+      await batch.commit().catch(() => {});
+    }
 
     return res.json({ ok: true, uid: targetUid });
   } catch (e) {
