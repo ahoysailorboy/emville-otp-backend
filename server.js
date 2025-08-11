@@ -17,7 +17,7 @@ app.use(cors());
 app.use(express.json());
 
 // ---------- Health check ----------
-app.get('/health', (_req, res) => res.status(200).send('ok'));
+app.get('/health', (_req, res) => res.status(200).send('OK'));
 
 // ---------- Reusable email transporter ----------
 const transporter = nodemailer.createTransport({
@@ -28,16 +28,27 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// ---------- Admin API key guard (applies only if ADMIN_API_KEY is set) ----------
+function adminKeyGuard(req, res, next) {
+  const requiredKey = process.env.ADMIN_API_KEY;
+  if (!requiredKey) return next(); // no key configured → skip auth
+  const provided = req.header('x-admin-key');
+  if (provided && provided === requiredKey) return next();
+  return res.status(401).json({ ok: false, error: 'Unauthorized' });
+}
+
 // ---------- Routes ----------
 const signupRoutes = require('./routes/signup');
 app.use('/api', signupRoutes);
 
+const adminUsersRoutes = require('./routes/adminUsers');
+// Protect all /api/admin/* endpoints with x-admin-key (if configured)
+app.use('/api/admin', adminKeyGuard, adminUsersRoutes);
+console.log(
+  `[init] /api/admin mounted${process.env.ADMIN_API_KEY ? ' with x-admin-key guard' : ' (no ADMIN_API_KEY set — guard disabled)'}`
+);
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).send('OK');
-});
-// In-memory OTP store: Map<email, { code, expires }>
+// ---------- In-memory OTP store: Map<email, { code, expires }> ----------
 const otpStore = new Map();
 
 /**
