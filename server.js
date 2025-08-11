@@ -12,8 +12,6 @@ const admin = require('./admin/firebase'); // eslint-disable-line no-unused-vars
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-console.log('[init] Admin projectId =', admin.app().options.projectId);
-
 // ---------- Middleware ----------
 app.use(cors());
 app.use(express.json());
@@ -44,14 +42,16 @@ const signupRoutes = require('./routes/signup');
 app.use('/api', signupRoutes);
 
 const adminUsersRoutes = require('./routes/adminUsers');
-// Protect all /api/admin/* endpoints with x-admin-key (if configured)
 app.use('/api/admin', adminKeyGuard, adminUsersRoutes);
 console.log(
   `[init] /api/admin mounted${process.env.ADMIN_API_KEY ? ' with x-admin-key guard' : ' (no ADMIN_API_KEY set — guard disabled)'}`
 );
 
-// ---------- In-memory OTP store: Map<email, { code, expires }> ----------
+// ---------- In-memory OTP store: Map<lowercasedEmail, { code, expires }> ----------
 const otpStore = new Map();
+
+// Helpers
+const normalizeEmail = (e) => String(e || '').trim().toLowerCase();
 
 /**
  * POST /send-otp
@@ -59,7 +59,7 @@ const otpStore = new Map();
  */
 app.post('/send-otp', async (req, res) => {
   try {
-    const { email } = req.body || {};
+    const email = normalizeEmail((req.body || {}).email);
     if (!email) {
       return res.status(400).json({ success: false, message: 'Email is required.' });
     }
@@ -84,31 +84,113 @@ app.post('/send-otp', async (req, res) => {
 });
 
 /**
- * POST /verify-otp
- * Body: { email: string, otp: string }
+ * POST /verify-otp  (kept for compatibility)
+ * Body: { email: string, otp?: string, code?: string }
  */
 app.post('/verify-otp', (req, res) => {
-  const { email, otp } = req.body || {};
-  if (!email || !otp) {
-    return res.status(400).json({ success: false, message: 'Missing email or OTP.' });
-  }
+  try {
+    const email = normalizeEmail((req.body || {}).email);
+    const token = String((req.body || {}).otp ?? (req.body || {}).code ?? '').trim();
 
-  const record = otpStore.get(email);
-  if (!record) {
-    return res.status(400).json({ success: false, message: 'No OTP found for this email.' });
-  }
+    if (!email || !token) {
+      return res.status(400).json({ success: false, message: 'Missing email or OTP.' });
+    }
 
-  if (Date.now() > record.expires) {
+    const record = otpStore.get(email);
+    if (!record) {
+      return res.status(400).json({ success: false, message: 'No OTP found for this email.' });
+    }
+
+    if (Date.now() > record.expires) {
+      otpStore.delete(email);
+      return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
+    }
+
+    if (record.code !== token) {
+      return res.status(400).json({ success: false, message: 'Invalid OTP.' });
+    }
+
     otpStore.delete(email);
-    return res.status(400).json({ success: false, message: 'OTP expired. Please request a new one.' });
+    return res.status(200).json({ success: true, message: 'OTP verified successfully.' });
+  } catch (err) {
+    console.error('verify-otp error:', err);
+    return res.status(500).json({ success: false, message: 'Server error verifying OTP.' });
   }
+});
 
-  if (record.code !== otp) {
-    return res.status(400).json({ success: false, message: 'Invalid OTP.' });
+/**
+ * ✅ POST /api/auth/signup-with-otp  (Correctness-first)
+ * Body: { email: string, password: string, displayName?: string, otp?: string, code?: string }
+ * - Verifies OTP from in-memory store
+ * - Creates Firebase Auth user
+ * - Upserts Firestore users/{uid} with default role: 'user'
+ * - Consumes OTP
+ */
+app.post('/api/auth/signup-with-otp', async (req, res) => {
+  try {
+    const { password, displayName } = req.body || {};
+    const email = normalizeEmail((req.body || {}).email);
+    const token = String((req.body || {}).otp ?? (req.body || {}).code ?? '').trim();
+
+    if (!email || !password || !token) {
+      return res.status(400).json({ ok: false, error: 'email, password and otp/code are required' });
+    }
+
+    // 1) Verify OTP
+    const record = otpStore.get(email);
+    if (!record) {
+      return res.status(400).json({ ok: false, error: 'No OTP found for this email (request a new one).' });
+    }
+    if (Date.now() > record.expires) {
+      otpStore.delete(email);
+      return res.status(400).json({ ok: false, error: 'OTP expired. Please request a new one.' });
+    }
+    if (record.code !== token) {
+      return res.status(400).json({ ok: false, error: 'Invalid OTP.' });
+    }
+
+    // 2) Create Auth user (if not exists)
+    let userRecord;
+    try {
+      userRecord = await admin.auth().createUser({
+        email,
+        password,
+        displayName: (displayName || '').trim() || undefined,
+        emailVerified: false,
+        disabled: false,
+      });
+    } catch (e) {
+      // If already exists, guide the client to login
+      if (e?.errorInfo?.code === 'auth/email-already-exists') {
+        return res.status(409).json({ ok: false, error: 'Email already registered. Please log in.' });
+      }
+      throw e;
+    }
+
+    const uid = userRecord.uid;
+
+    // 3) Create/merge profile doc with default role
+    await admin.firestore().collection('users').doc(uid).set(
+      {
+        uid,
+        email,
+        displayName: userRecord.displayName || '',
+        role: 'user',
+        isAdmin: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true }
+    );
+
+    // 4) Consume OTP
+    otpStore.delete(email);
+
+    return res.status(200).json({ ok: true, uid });
+  } catch (err) {
+    console.error('signup-with-otp failed:', err);
+    return res.status(500).json({ ok: false, error: String(err?.message || err) });
   }
-
-  otpStore.delete(email);
-  return res.status(200).json({ success: true, message: 'OTP verified successfully.' });
 });
 
 // ---------- Start server ----------
